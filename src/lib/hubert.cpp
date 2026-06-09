@@ -1,6 +1,7 @@
 #include <cassert>
 #include <vector>
 #include <Eigen/Dense>
+#include <unsupported/Eigen/SpecialFunctions>
 #include "hubert.h"
 #include "incbin.h"
 
@@ -118,21 +119,102 @@ namespace hubert
 
 //----------------------------------------------------------------------------------------------------------------
 
+    struct channel_norm
+    {
+        size_t nin{};
+        float  eps{1e-5f};
+        VectorXf w;
+        VectorXf b;
+
+        channel_norm(size_t nin_, float eps_ = 1e-5f)
+        : nin{nin_},
+          eps{eps_},
+          w(nin),
+          b(nin)
+        {
+        }
+
+        auto load_weights(std::span<const float> data) -> std::span<const float>
+        {
+            if (data.size() < size_t(w.size()+b.size())) throw std::runtime_error("Not enough data in groupnorm weights");
+            size_t off{0};
+            w = Eigen::Map<const VectorXf>(data.subspan(off, w.size()).data(), w.size()); off += w.size();
+            b = Eigen::Map<const VectorXf>(data.subspan(off, b.size()).data(), b.size()); off += b.size();
+            return data.subspan(off);
+        }
+
+        std::span<float> operator()(std::span<float> input)
+        {
+            const size_t T = input.size() / nin;
+
+            auto X = Eigen::Map<MatrixXf>(input.data(), T, nin);
+
+            for (size_t c{0}; c < nin; ++c)
+            {
+                auto x           = X.col(c).array();
+                const float mean = x.mean();
+                const float var  = (x - mean).square().mean();
+                const float inv  = 1.0f / std::sqrt(var + eps);
+                x = (x - mean) * inv * w(c) + b(c);
+            }
+
+            return input;
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
+    template <class Derived>
+    auto gelu(const Eigen::ArrayBase<Derived>& x)
+    {
+        return 0.5f * x * (1.0f + (x * 0.70710678118654752440f).erf());
+    }
+
+    std::span<float> gelu(std::span<float> x)
+    {
+        auto X = Eigen::Map<ArrayXf>(x.data(), x.size()); 
+        X = gelu(X);
+        return x;
+    }
+
+//----------------------------------------------------------------------------------------------------------------
+
     struct model::impl
     {
-        conv b0;
+        conv b0; channel_norm n0;
+        conv b1a; conv b1b; conv b1c; conv b1d;
+        conv b2a; conv b2b;
 
         impl()
-        : b0(1,512,10,0,5,1,false)
+        : b0(1,512,10,0,5,1,false), n0(512),
+          b1a(512,512,3,0,2,1,false),
+          b1b(512,512,3,0,2,1,false),
+          b1c(512,512,3,0,2,1,false),
+          b1d(512,512,3,0,2,1,false),
+          b2a(512,512,2,0,2,1,false),
+          b2b(512,512,2,0,2,1,false)
         {
             auto weights = std::span{(const float*)ghubert_weightsData, ghubert_weightsSize/4};
             weights = b0.load_weights(weights);
+            weights = n0.load_weights(weights);
+            weights = b1a.load_weights(weights);
+            weights = b1b.load_weights(weights);
+            weights = b1c.load_weights(weights);
+            weights = b1d.load_weights(weights);
+            weights = b2a.load_weights(weights);
+            weights = b2b.load_weights(weights);
             // if (!weights.empty()) throw std::runtime_error("Failed to load encoder weights");
         }
 
         std::span<const float> encode(std::span<const float> audio)
         {
-            auto x = b0(audio);
+            auto x = gelu(n0(b0(audio)));
+            x      = gelu(b1a(x));
+            x      = gelu(b1b(x));
+            x      = gelu(b1c(x));
+            x      = gelu(b1d(x));
+            x      = gelu(b2a(x));
+            x      = gelu(b2b(x));
             return x;
         }
     };
