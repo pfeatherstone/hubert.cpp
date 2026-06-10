@@ -62,8 +62,8 @@ add_executable(hubert.tests
 target_link_libraries(hubert.tests PRIVATE hubert::hubert Catch2::Catch2WithMain)
 target_link_options(hubert.tests PRIVATE $<$<CONFIG:Release>:-s>)
 
-# if (HUBERT_ENABLE_SANITIZERS)
-#   message(STATUS "Enabling sanitizers on unit tests")
-#   target_compile_options(hubert PUBLIC $<$<OR:${IS_GCC},${IS_CLANG}>:-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined>)
-#   target_link_options(hubert PUBLIC $<$<OR:${IS_GCC},${IS_CLANG}>:-fsanitize=address,undefined>)
-# endif()
+if (HUBERT_ENABLE_SANITIZERS)
+  message(STATUS "Enabling sanitizers on unit tests")
+  target_compile_options(hubert PUBLIC $<$<OR:${IS_GCC},${IS_CLANG}>:-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined>)
+  target_link_options(hubert PUBLIC $<$<OR:${IS_GCC},${IS_CLANG}>:-fsanitize=address,undefined>)
+endif()
