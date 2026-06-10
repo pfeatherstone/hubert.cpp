@@ -1,5 +1,6 @@
 #include <cassert>
 #include <vector>
+#include <array>
 #include <Eigen/Dense>
 #include <unsupported/Eigen/SpecialFunctions>
 #include "hubert.h"
@@ -27,6 +28,62 @@ namespace hubert
 
 //----------------------------------------------------------------------------------------------------------------
 
+    template <class T, size_t N, class... Args>
+    auto make_array(Args&&... args)
+    {
+        return []<size_t... I>(std::index_sequence<I...>, Args&&... args) {
+            return std::array<T, N>{((void)I, T(std::forward<Args>(args)...))...};
+        }(std::make_index_sequence<N>{}, std::forward<Args>(args)...);
+    }
+
+//----------------------------------------------------------------------------------------------------------------
+
+    constexpr void add(std::span<const float> a, std::span<const float> b, std::span<float> c)
+    {
+        for (size_t i{0} ; i < a.size() ; ++i)
+            c[i] = a[i] + b[i];
+    }
+
+//----------------------------------------------------------------------------------------------------------------
+
+    struct linear
+    {
+        MatrixXf w;
+        VectorXf b;
+        MatrixXf out;
+
+        linear(size_t nin_, size_t nout_)
+        : w(nout_, nin_),
+          b(nout_)
+        {
+        }
+
+        auto load_weights(std::span<const float> data) -> std::span<const float>
+        {
+            if (data.size() < size_t(w.size() + b.size())) throw std::runtime_error("Not enough data in weights");
+            size_t off{0};
+            auto w_ = Eigen::Map<const MatrixXf>(data.subspan(off, w.size()).data(), nout(), nin()); off += w.size();
+            auto b_ = Eigen::Map<const VectorXf>(data.subspan(off, b.size()).data(), nout());        off += b.size();
+            w       = w_;
+            b       = b_;
+            return data.subspan(off);
+        }
+
+        size_t nin()  {return w.cols();}
+        size_t nout() {return w.rows();}
+
+        std::span<float> operator()(std::span<const float> input)
+        {
+            const size_t Tin = input.size() / nin();
+            auto x = Eigen::Map<const MatrixXf>(input.data(), Tin, nin());
+            out.noalias() = x * w.transpose() ;
+            out.rowwise() += b.transpose();
+            return std::span<float>{out.data(), static_cast<size_t>(out.size())};
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+  
     struct conv
     {
         size_t   nin{};
@@ -119,14 +176,14 @@ namespace hubert
 
 //----------------------------------------------------------------------------------------------------------------
 
-    struct channel_norm
+    struct instance_norm
     {
-        size_t nin{};
-        float  eps{1e-5f};
+        size_t   nin{};
+        float    eps{};
         VectorXf w;
         VectorXf b;
 
-        channel_norm(size_t nin_, float eps_ = 1e-5f)
+        instance_norm(size_t nin_, float eps_ = 1e-5f)
         : nin{nin_},
           eps{eps_},
           w(nin),
@@ -146,7 +203,6 @@ namespace hubert
         std::span<float> operator()(std::span<float> input)
         {
             const size_t T = input.size() / nin;
-
             auto X = Eigen::Map<MatrixXf>(input.data(), T, nin);
 
             for (size_t c{0}; c < nin; ++c)
@@ -156,6 +212,50 @@ namespace hubert
                 const float var  = (x - mean).square().mean();
                 const float inv  = 1.0f / std::sqrt(var + eps);
                 x = (x - mean) * inv * w(c) + b(c);
+            }
+
+            return input;
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
+    struct layernorm
+    {
+        size_t   nin{};
+        float    eps{};
+        VectorXf w;
+        VectorXf b;
+
+        layernorm(size_t nin_, float eps_ = 1e-5f)
+        : nin{nin_},
+          eps{eps_},
+          w(nin),
+          b(nin)
+        {
+        }
+
+        auto load_weights(std::span<const float> data) -> std::span<const float>
+        {
+            if (data.size() < size_t(w.size()+b.size())) throw std::runtime_error("Not enough data in groupnorm weights");
+            size_t off{0};
+            w = Eigen::Map<const VectorXf>(data.subspan(off, w.size()).data(), w.size()); off += w.size();
+            b = Eigen::Map<const VectorXf>(data.subspan(off, b.size()).data(), b.size()); off += b.size();
+            return data.subspan(off);
+        }
+
+        std::span<float> operator()(std::span<float> input)
+        {
+            const size_t T = input.size() / nin;
+            auto X = Eigen::Map<MatrixXf>(input.data(), T, nin);
+
+            for (size_t t{0}; t < T; ++t)
+            {
+                auto x           = X.row(t).array();
+                const float mean = x.mean();
+                const float var  = (x - mean).square().mean();
+                const float inv  = 1.0f / std::sqrt(var + eps);
+                x                = ((x - mean) * inv) * w.transpose().array() + b.transpose().array();
             }
 
             return input;
@@ -179,42 +279,69 @@ namespace hubert
 
 //----------------------------------------------------------------------------------------------------------------
 
+    struct pos_embedding
+    {
+        conv        c;
+        layernorm   n;
+
+        pos_embedding(size_t dim, size_t k, size_t p, size_t g)
+        : c(dim,dim,k,p,1,g,true),
+          n(dim)
+        {
+        }
+
+        auto load_weights(std::span<const float> data) -> std::span<const float>
+        {
+            data = c.load_weights(data);
+            data = n.load_weights(data);
+            return data;
+        }
+
+        std::span<float> operator()(std::span<const float> input)
+        {
+            auto x = gelu(c(input));
+            x = x.subspan(0, x.size()-c.nout);
+            add(input, x, x);
+            x = n(x);
+            return x;
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
     struct model::impl
     {
-        conv b0; channel_norm n0;
-        conv b1a; conv b1b; conv b1c; conv b1d;
-        conv b2a; conv b2b;
+        conv               b0; 
+        instance_norm      n0;
+        std::array<conv,4> b1;
+        std::array<conv,2> b2;
+        linear             b3;
+        pos_embedding      b4;
 
         impl()
         : b0(1,512,10,0,5,1,false), n0(512),
-          b1a(512,512,3,0,2,1,false),
-          b1b(512,512,3,0,2,1,false),
-          b1c(512,512,3,0,2,1,false),
-          b1d(512,512,3,0,2,1,false),
-          b2a(512,512,2,0,2,1,false),
-          b2b(512,512,2,0,2,1,false)
+          b1(make_array<conv,4>(512,512,3,0,2,1,false)),
+          b2(make_array<conv,2>(512,512,2,0,2,1,false)),
+          b3(512, 768),
+          b4(768,128,64,16)
         {
             auto weights = std::span{(const float*)ghubert_weightsData, ghubert_weightsSize/4};
             weights = b0.load_weights(weights);
             weights = n0.load_weights(weights);
-            weights = b1a.load_weights(weights);
-            weights = b1b.load_weights(weights);
-            weights = b1c.load_weights(weights);
-            weights = b1d.load_weights(weights);
-            weights = b2a.load_weights(weights);
-            weights = b2b.load_weights(weights);
+            for (auto& b : b1) weights = b.load_weights(weights);
+            for (auto& b : b2) weights = b.load_weights(weights);
+            weights = b3.load_weights(weights);
+            weights = b4.load_weights(weights);
             // if (!weights.empty()) throw std::runtime_error("Failed to load encoder weights");
         }
 
         std::span<const float> encode(std::span<const float> audio)
         {
             auto x = gelu(n0(b0(audio)));
-            x      = gelu(b1a(x));
-            x      = gelu(b1b(x));
-            x      = gelu(b1c(x));
-            x      = gelu(b1d(x));
-            x      = gelu(b2a(x));
-            x      = gelu(b2b(x));
+            for (auto& b : b1) x = gelu(b(x));
+            for (auto& b : b2) x = gelu(b(x));
+            x = b3(x);
+            x = b4(x);
             return x;
         }
     };
