@@ -277,6 +277,14 @@ namespace hubert
         return x;
     }
 
+    template <class Derived>
+    auto softmax(const Eigen::ArrayBase<Derived>& x)
+    {
+        const float m = x.maxCoeff();
+        const auto e = (x - m).exp().eval();
+        return (e / e.sum()).eval();
+    }
+
 //----------------------------------------------------------------------------------------------------------------
 
     struct pos_embedding
@@ -309,21 +317,154 @@ namespace hubert
 
 //----------------------------------------------------------------------------------------------------------------
 
+    struct attention
+    {
+        size_t   dim{};
+        size_t   heads{};
+        size_t   dim_head() const {return dim/heads;}
+        linear   to_qkv;
+        linear   to_out;
+        MatrixXf scores;    // [T, T]
+        MatrixXf out;       // [T, dim]
+
+        attention(size_t dim_, size_t heads_)
+        : dim{dim_},
+          heads{heads_},
+          to_qkv(dim,3*heads*dim_head()),
+          to_out(heads*dim_head(), dim)
+        {
+            if (heads == 0)         throw std::runtime_error("attention heads must be non-zero");
+            if (dim % heads != 0)   throw std::runtime_error("attention dim must be divisible by heads");
+        }
+
+        auto load_weights(std::span<const float> data)
+        {
+            data = to_qkv.load_weights(data);
+            data = to_out.load_weights(data);
+            return data;
+        }
+
+        std::span<float> operator()(std::span<const float> input)
+        {
+            const size_t T      = input.size() / dim;
+            const float  scale  = 1.0f / std::sqrt(dim_head());
+            out.resize(T, dim);
+
+            auto qkv = to_qkv(input);
+            auto QKV = Eigen::Map<const MatrixXf>(qkv.data(), T, 3*heads*dim_head());
+            auto Q   = QKV(all, seqN(0,     dim));
+            auto K   = QKV(all, seqN(dim,   dim));
+            auto V   = QKV(all, seqN(2*dim, dim));
+
+            for (size_t h{0}; h < heads; ++h)
+            {
+                const size_t c0 = h * dim_head();
+
+                auto Qh = Q(all, seqN(c0, dim_head()));
+                auto Kh = K(all, seqN(c0, dim_head()));
+                auto Vh = V(all, seqN(c0, dim_head()));
+                auto Oh = out(all, seqN(c0, dim_head()));
+
+                scores.noalias() = Qh * Kh.transpose();
+                scores *= scale;
+
+                // row-wise softmax
+                for (size_t t{0}; t < T; ++t)
+                {
+                    auto row = scores.row(t).array();
+                    row = softmax(row);
+                }
+
+                Oh.noalias() = scores * Vh;
+            }
+
+            return to_out(std::span{out.data(), (size_t)out.size()});
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
+    struct feedforward
+    {
+        linear b0;
+        linear b1;
+
+        feedforward(size_t dim, size_t ff_mult)
+        : b0(dim, dim*ff_mult),
+          b1(dim*ff_mult, dim)
+        {
+        }
+
+        auto load_weights(std::span<const float> data)
+        {
+            data = b0.load_weights(data);
+            data = b1.load_weights(data);
+            return data;
+        }
+
+        std::span<float> operator()(std::span<const float> input)
+        {
+            return b1(gelu(b0(input)));
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
+    struct encoder
+    {
+        attention   b0;
+        feedforward b1;
+        layernorm   n0;
+        layernorm   n1;
+
+        encoder(size_t dim, size_t heads, size_t ff_mult)
+        : b0(dim, heads),
+          b1(dim, ff_mult),
+          n0(dim),
+          n1(dim)
+        {
+        }
+
+        auto load_weights(std::span<const float> data)
+        {
+            data = b0.load_weights(data);
+            data = b1.load_weights(data);
+            data = n0.load_weights(data);
+            data = n1.load_weights(data);
+            return data;
+        }
+
+        std::span<float> operator()(std::span<float> x)
+        {
+            auto y = b0(x);
+            add(x, y, x);
+            x = n0(x);
+            y = b1(x);
+            add(x, y, x);
+            x = n1(x);
+            return x;
+        }
+    };
+
+//----------------------------------------------------------------------------------------------------------------
+
     struct model::impl
     {
-        conv               b0; 
-        instance_norm      n0;
-        std::array<conv,4> b1;
-        std::array<conv,2> b2;
-        linear             b3;
-        pos_embedding      b4;
+        conv                    b0; 
+        instance_norm           n0;
+        std::array<conv,4>      b1;
+        std::array<conv,2>      b2;
+        linear                  b3;
+        pos_embedding           b4;
+        std::array<encoder,2>   b5;
 
         impl()
         : b0(1,512,10,0,5,1,false), n0(512),
           b1(make_array<conv,4>(512,512,3,0,2,1,false)),
           b2(make_array<conv,2>(512,512,2,0,2,1,false)),
           b3(512, 768),
-          b4(768,128,64,16)
+          b4(768,128,64,16),
+          b5(make_array<encoder,2>(768,12,4))
         {
             auto weights = std::span{(const float*)ghubert_weightsData, ghubert_weightsSize/4};
             weights = b0.load_weights(weights);
@@ -332,7 +473,8 @@ namespace hubert
             for (auto& b : b2) weights = b.load_weights(weights);
             weights = b3.load_weights(weights);
             weights = b4.load_weights(weights);
-            // if (!weights.empty()) throw std::runtime_error("Failed to load encoder weights");
+            for (auto& b : b5) weights = b.load_weights(weights);
+            if (!weights.empty()) throw std::runtime_error("Failed to load encoder weights");
         }
 
         std::span<const float> encode(std::span<const float> audio)
@@ -342,6 +484,7 @@ namespace hubert
             for (auto& b : b2) x = gelu(b(x));
             x = b3(x);
             x = b4(x);
+            for (auto& b : b5) x = b(x);
             return x;
         }
     };
