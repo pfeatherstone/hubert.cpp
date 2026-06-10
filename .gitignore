@@ -1,3 +1,5 @@
 **/.vscode
 **/.cache
 **/build
+**/feats.dat
+**/original.dat
