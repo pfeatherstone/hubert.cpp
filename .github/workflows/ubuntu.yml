@@ -57,7 +57,7 @@ jobs:
           sudo apt update
           sudo apt install -y ninja-build cmake ${{ matrix.packages }}
 
-      - name: Run CMake configuration and build
+      - name: Configure and build
         run: |
           cmake . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -78,11 +78,30 @@ jobs:
           name: junit-${{ matrix.name }}
           path: build/test-results/*.xml
 
+  report:
+    name: Unit Test Report
+    runs-on: ubuntu-24.04
+    needs: build-test
+    if: ${{ always() }}
+
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+
+    steps:
+      - name: Download JUnit XML artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: junit-*
+          path: test-results
+          merge-multiple: true
+
       - name: Test Report
         uses: dorny/test-reporter@v3
-        if: ${{ always() }}
         with:
-          name: Unit Tests (${{ matrix.name }})
-          path: build/test-results/hubert-tests-${{ matrix.name }}.xml
+          name: Unit Tests
+          path: test-results/*.xml
           reporter: java-junit
           fail-on-error: "false"
+          fail-on-empty: "false"
