@@ -18,17 +18,16 @@ auto load_file(const fs::path& path)
     return data;
 }
 
-auto max_diff(std::span<const float> actual, std::span<const float> expected)
+void check_close(std::span<const float> actual, std::span<const float> expected, const float atol, const float rtol)
 {
-    float maxdiff{0.0f};
+    REQUIRE(actual.size() == expected.size());
 
     for (size_t i{0} ; i < actual.size() ; ++i)
     {
         const float diff = std::abs(actual[i] - expected[i]);
-        maxdiff = std::max(maxdiff, diff);
+        CAPTURE(i, actual[i], expected[i], diff, atol, rtol);
+        CHECK(diff <= (atol + rtol*std::abs(expected[i])));
     }
-
-    return maxdiff;
 }
 
 TEST_CASE("test data", "[hubert]")
@@ -62,7 +61,6 @@ TEST_CASE("test data", "[hubert]")
         auto feats_exp  = load_file<float>(feats_path);
         auto feats_cal  = net.encode(audio);
         CHECK(feats_exp.size() == feats_cal.size());
-        const auto diff = max_diff(feats_cal, feats_exp);
-        CHECK(diff < 3e-5);
+        check_close(feats_exp, feats_cal, 1e-5, 1.3e-6);
     }
 }
