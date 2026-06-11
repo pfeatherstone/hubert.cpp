@@ -43,7 +43,7 @@ target_include_directories(hubert
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/lib>
   PUBLIC $<INSTALL_INTERFACE:include>)
 
-target_compile_options(hubert 
+target_compile_options(hubert
   PRIVATE $<${IS_NOT_MSVC}:-Wall -Wextra -Wpedantic -Werror>
   PRIVATE $<$<BOOL:${AVX_FOUND}>:${AVX_CFLAGS}>
   PRIVATE $<$<BOOL:${NEON_FOUND}>:${NEON_CFLAGS}>
@@ -57,10 +57,11 @@ target_link_libraries(hubert.example PRIVATE hubert::hubert)
 target_link_options(hubert.example PRIVATE $<$<CONFIG:Release>:-s>)
 
 # Test
-add_executable(hubert.tests
-  src/tests/hubert.cpp)
+add_executable(hubert.tests src/tests/hubert.cpp)
 target_link_libraries(hubert.tests PRIVATE hubert::hubert Catch2::Catch2WithMain)
 target_link_options(hubert.tests PRIVATE $<$<CONFIG:Release>:-s>)
+get_filename_component(HUBERT_TEST_DATA ${CMAKE_CURRENT_SOURCE_DIR}/src/tests/data REALPATH)
+target_compile_definitions(hubert.tests PRIVATE HUBERT_TEST_DATA="${HUBERT_TEST_DATA}")
 
 if (HUBERT_ENABLE_SANITIZERS)
   message(STATUS "Enabling sanitizers on unit tests")
