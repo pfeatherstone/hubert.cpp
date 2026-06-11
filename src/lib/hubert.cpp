@@ -227,6 +227,9 @@ namespace hubert
         float    eps{};
         VectorXf w;
         VectorXf b;
+        VectorXf mu;
+        VectorXf var;
+        VectorXf inv;
 
         layernorm(size_t nin_, float eps_ = 1e-5f)
         : nin{nin_},
@@ -250,14 +253,11 @@ namespace hubert
             const size_t T = input.size() / nin;
             auto X = Eigen::Map<MatrixXf>(input.data(), T, nin);
 
-            for (size_t t{0}; t < T; ++t)
-            {
-                auto x           = X.row(t).array();
-                const float mean = x.mean();
-                const float var  = (x - mean).square().mean();
-                const float inv  = 1.0f / std::sqrt(var + eps);
-                x                = ((x - mean) * inv) * w.transpose().array() + b.transpose().array();
-            }
+            mu  = X.rowwise().mean();                                   // [T, 1]
+            var = (X.colwise() - mu).array().square().rowwise().mean(); // [T, 1]
+            inv = (var.array() + eps).sqrt().inverse();                 // [T, 1]       
+            X   = (X.colwise() - mu).array().colwise() * inv.array();
+            X   = X.array().rowwise() * w.transpose().array() + b.transpose().array();
 
             return input;
         }
