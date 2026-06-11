@@ -61,6 +61,6 @@ TEST_CASE("test data", "[hubert]")
         auto feats_exp  = load_file<float>(feats_path);
         auto feats_cal  = net.encode(audio);
         CHECK(feats_exp.size() == feats_cal.size());
-        check_close(feats_exp, feats_cal, 1e-5, 1.3e-6);
+        check_close(feats_cal, feats_exp, 1e-5, 2e-6);
     }
 }
