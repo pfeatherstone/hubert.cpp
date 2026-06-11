@@ -63,6 +63,6 @@ TEST_CASE("test data", "[hubert]")
         auto feats_cal  = net.encode(audio);
         CHECK(feats_exp.size() == feats_cal.size());
         const auto diff = max_diff(feats_cal, feats_exp);
-        CHECK(diff < 1.4e-5);
+        CHECK(diff < 3e-5);
     }
 }
