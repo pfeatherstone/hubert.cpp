@@ -10,7 +10,8 @@
 
 using MatrixXf      = Eigen::Matrix<float, -1, -1, Eigen::RowMajor>;
 using MatrixXu16    = Eigen::Matrix<uint16_t, -1, -1, Eigen::RowMajor>;
-using VectorXf      = Eigen::Vector<float, -1>;
+using VectorXf      = Eigen::Matrix<float, -1, 1>;
+using RowVectorXf   = Eigen::Matrix<float, 1, -1>;
 using ArrayXf       = Eigen::Array<float, -1, 1>;
 using Eigen::seq;
 using Eigen::seqN;
@@ -178,10 +179,13 @@ namespace hubert
 
     struct instance_norm
     {
-        size_t   nin{};
-        float    eps{};
-        VectorXf w;
-        VectorXf b;
+        size_t      nin{};
+        float       eps{};
+        VectorXf    w;
+        VectorXf    b;
+        RowVectorXf mu;
+        RowVectorXf var;
+        RowVectorXf inv;
 
         instance_norm(size_t nin_, float eps_ = 1e-5f)
         : nin{nin_},
@@ -205,14 +209,11 @@ namespace hubert
             const size_t T = input.size() / nin;
             auto X = Eigen::Map<MatrixXf>(input.data(), T, nin);
 
-            for (size_t c{0}; c < nin; ++c)
-            {
-                auto x           = X.col(c).array();
-                const float mean = x.mean();
-                const float var  = (x - mean).square().mean();
-                const float inv  = 1.0f / std::sqrt(var + eps);
-                x = (x - mean) * inv * w(c) + b(c);
-            }
+            mu  = X.colwise().mean();                                   // [1, nin]
+            var = (X.rowwise() - mu).array().square().colwise().mean(); // [1, nin]
+            inv = (var.array() + eps).sqrt().inverse();                 // [1, nin]       
+            X   = (X.rowwise() - mu).array().rowwise() * inv.array();
+            X   = X.array().rowwise() * w.transpose().array() + b.transpose().array();
 
             return input;
         }
