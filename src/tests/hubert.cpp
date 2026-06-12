@@ -64,3 +64,17 @@ TEST_CASE("test data", "[hubert]")
         check_close(feats_cal, feats_exp, 2e-5f, 1e-5f);
     }
 }
+
+TEST_CASE("benchmark", "[hubert]")
+{
+    hubert::model net;
+
+    float audio[24000];
+    memset(audio, 0, sizeof(audio));
+    
+    BENCHMARK("benchmark encode(audio[24000])")
+    {
+        auto feats = net.encode(audio);
+        return feats.size();
+    };
+}

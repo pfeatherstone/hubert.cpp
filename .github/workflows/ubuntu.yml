@@ -71,7 +71,7 @@ jobs:
       - name: Run unit tests
         run: |
           mkdir -p build/test-results
-          ./build/hubert.tests --reporter console --reporter junit::out=build/test-results/hubert-tests-${{ matrix.name }}.xml
+          ./build/hubert.tests --skip-benchmarks --reporter console --reporter junit::out=build/test-results/hubert-tests-${{ matrix.name }}.xml
 
       - name: Upload JUnit XML artifact
         if: ${{ always() }}
