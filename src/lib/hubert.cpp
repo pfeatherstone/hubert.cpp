@@ -278,14 +278,6 @@ namespace hubert
         return x;
     }
 
-    template <class Derived>
-    auto softmax(const Eigen::ArrayBase<Derived>& x)
-    {
-        const float m = x.maxCoeff();
-        const auto e = (x - m).exp().eval();
-        return (e / e.sum()).eval();
-    }
-
 //----------------------------------------------------------------------------------------------------------------
 
     struct pos_embedding
@@ -373,7 +365,9 @@ namespace hubert
                 for (size_t t{0}; t < T; ++t)
                 {
                     auto row = scores.row(t).array();
-                    row = softmax(row);
+                    const float m = row.maxCoeff();
+                    row = (row - m).exp();
+                    row /= row.sum();
                 }
 
                 Oh.noalias() = scores * Vh;
